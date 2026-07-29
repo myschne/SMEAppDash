@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import json
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -17,6 +17,7 @@ from google.analytics.data_v1beta.types import (
     Dimension,
     Filter,
     FilterExpression,
+    FilterExpressionList,
     Metric,
     OrderBy,
     RunRealtimeReportRequest,
@@ -30,6 +31,7 @@ from store_downloads import fetch_store_downloads
 APP_NAME = "Advanced Manufacturing App"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
+APP_PLATFORMS = ["Android", "iOS"]
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,24 @@ def rows_to_dataframe(response, dimensions: Iterable[str], metrics: Iterable[str
     return pd.DataFrame.from_records(records, columns=dimension_names + metric_names)
 
 
+def app_platform_filter() -> FilterExpression:
+    return FilterExpression(
+        filter=Filter(
+            field_name="platform",
+            in_list_filter=Filter.InListFilter(values=APP_PLATFORMS, case_sensitive=False),
+        )
+    )
+
+
+def combine_dimension_filters(*filters: FilterExpression | None) -> FilterExpression | None:
+    active_filters = [item for item in filters if item is not None]
+    if not active_filters:
+        return None
+    if len(active_filters) == 1:
+        return active_filters[0]
+    return FilterExpression(and_group=FilterExpressionList(expressions=active_filters))
+
+
 def date_range_label(start: date, end: date) -> tuple[str, str]:
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
@@ -107,6 +127,7 @@ def run_report(
     limit: int = 1000,
     event_name: str | None = None,
     order_metric: str | None = None,
+    app_only: bool = True,
 ) -> pd.DataFrame:
     request = RunReportRequest(
         property=f"properties/{config.property_id}",
@@ -115,8 +136,9 @@ def run_report(
         date_ranges=[DateRange(start_date=date_range_label(start, end)[0], end_date=date_range_label(start, end)[1])],
         limit=limit,
     )
+    event_filter = None
     if event_name:
-        request.dimension_filter = FilterExpression(
+        event_filter = FilterExpression(
             filter=Filter(
                 field_name="eventName",
                 string_filter=Filter.StringFilter(
@@ -125,6 +147,10 @@ def run_report(
                 ),
             )
         )
+    request.dimension_filter = combine_dimension_filters(
+        app_platform_filter() if app_only else None,
+        event_filter,
+    )
     if order_metric:
         request.order_bys = [OrderBy(metric=OrderBy.MetricOrderBy(metric_name=order_metric), desc=True)]
 
@@ -132,13 +158,14 @@ def run_report(
     return rows_to_dataframe(response, dimensions, metrics)
 
 
-def run_realtime_report(config: GaConfig, dimensions: list[str], limit: int = 10) -> pd.DataFrame:
+def run_realtime_report(config: GaConfig, dimensions: list[str], limit: int = 10, app_only: bool = True) -> pd.DataFrame:
     response = get_client(str(config.service_account_file)).run_realtime_report(
         RunRealtimeReportRequest(
             property=f"properties/{config.property_id}",
             dimensions=[Dimension(name=name) for name in dimensions],
             metrics=[Metric(name="activeUsers")],
             limit=limit,
+            dimension_filter=app_platform_filter() if app_only else None,
             order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="activeUsers"), desc=True)],
         )
     )
@@ -181,6 +208,7 @@ def load_dashboard_data(config: GaConfig, start: date, end: date) -> dict[str, p
     device_categories = run_realtime_report(config, ["deviceCategory"], limit=8)
     top_countries = run_realtime_report(config, ["country"], limit=8)
     realtime_minutes = run_realtime_report(config, ["minutesAgo"], limit=30)
+    realtime_summary = run_realtime_report(config, [], limit=1)
     return {
         "downloads_daily": store_downloads.downloads_daily,
         "download_notes": pd.DataFrame({"note": store_downloads.notes}),
@@ -191,6 +219,7 @@ def load_dashboard_data(config: GaConfig, start: date, end: date) -> dict[str, p
         "device_models": device_models,
         "device_categories": device_categories,
         "realtime_minutes": realtime_minutes,
+        "realtime_summary": realtime_summary,
     }
 
 
@@ -198,8 +227,12 @@ def normalize_date_column(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "date" not in df:
         return df
     output = df.copy()
-    output["date"] = pd.to_datetime(output["date"])
-    return output
+    raw_dates = output["date"].astype(str)
+    if raw_dates.str.fullmatch(r"\d{8}").all():
+        output["date"] = pd.to_datetime(raw_dates, format="%Y%m%d")
+    else:
+        output["date"] = pd.to_datetime(output["date"])
+    return output.sort_values("date")
 
 
 def platform_label(platform: str) -> str:
@@ -226,7 +259,12 @@ def render_ranked_table(df: pd.DataFrame, label_column: str, metric_column: str 
         st.caption("No realtime data available.")
         return
     table_df = df[[label_column, metric_column]].copy()
-    table_df.columns = [label_column.replace("_", " ").title(), "Active Users"]
+    label_map = {
+        "country": "Country",
+        "deviceModel": "Device Model",
+        "deviceCategory": "Device Category",
+    }
+    table_df.columns = [label_map.get(label_column, label_column.replace("_", " ").title()), "Active Users"]
     st.dataframe(
         table_df,
         hide_index=True,
@@ -238,7 +276,8 @@ def render_ranked_table(df: pd.DataFrame, label_column: str, metric_column: str 
 def render_realtime_card(data: dict[str, pd.DataFrame]) -> None:
     top_countries = data["top_countries"]
     realtime_minutes = data["realtime_minutes"].copy()
-    active_total = int(top_countries["activeUsers"].sum()) if not top_countries.empty else 0
+    realtime_summary = data["realtime_summary"]
+    active_total = int(realtime_summary["activeUsers"].iloc[0]) if not realtime_summary.empty else 0
 
     with st.container(border=True):
         left, right = st.columns([1, 0.16])
@@ -253,6 +292,9 @@ def render_realtime_card(data: dict[str, pd.DataFrame]) -> None:
             realtime_minutes["minutesAgo"] = realtime_minutes["minutesAgo"].astype(int)
             realtime_minutes = realtime_minutes.sort_values("minutesAgo", ascending=False)
             fig = px.bar(realtime_minutes, x="minutesAgo", y="activeUsers", color_discrete_sequence=["#1a73e8"])
+            fig.update_traces(
+                hovertemplate="<b>%{y:,} active users</b><br>%{x} minutes ago<extra></extra>"
+            )
             fig.update_layout(
                 height=110,
                 margin=dict(l=0, r=0, t=2, b=0),
@@ -286,6 +328,7 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
             mode="lines",
             name="Avg engagement seconds",
             line=dict(color="#1a73e8", width=2),
+            hovertemplate="<b>%{y:.0f}s avg engagement</b><br>%{x|%b %-d, %Y}<extra></extra>",
         )
     )
     fig.add_trace(
@@ -296,6 +339,7 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
             marker_color="#8a4b08",
             opacity=0.5,
             yaxis="y2",
+            hovertemplate="<b>%{y:,} engaged sessions</b><br>%{x|%b %-d, %Y}<extra></extra>",
         )
     )
     fig.update_layout(
@@ -304,6 +348,7 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
         legend=dict(orientation="h", y=1.12),
         yaxis=dict(title="Seconds"),
         yaxis2=dict(title="Sessions", overlaying="y", side="right", showgrid=False),
+        hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -313,6 +358,17 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
     if df.empty:
         st.info("No store download data returned for this date range.")
         return
+
+    totals = df.groupby("store", as_index=False)["downloads"].sum()
+    apple_total = int(totals.loc[totals["store"].eq("Apple"), "downloads"].sum())
+    android_total = int(totals.loc[totals["store"].eq("Android"), "downloads"].sum())
+    total_cols = st.columns(3)
+    with total_cols[0]:
+        st.metric("Apple downloads", f"{apple_total:,}")
+    with total_cols[1]:
+        st.metric("Android downloads", f"{android_total:,}")
+    with total_cols[2]:
+        st.metric("Store total", f"{apple_total + android_total:,}")
 
     left, right = st.columns([1.4, 1])
     with left:
@@ -325,7 +381,13 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
             labels={"downloads": "Downloads", "store": "Store"},
             color_discrete_map={"Apple": "#1a73e8", "Android": "#34a853"},
         )
-        fig.update_layout(height=320, margin=dict(l=0, r=0, t=8, b=0), legend=dict(orientation="h", y=1.12))
+        fig.update_traces(hovertemplate="<b>%{y:,} downloads</b><br>%{x|%b %-d, %Y}<extra>%{fullData.name}</extra>")
+        fig.update_layout(
+            height=320,
+            margin=dict(l=0, r=0, t=8, b=0),
+            legend=dict(orientation="h", y=1.12),
+            hovermode="x unified",
+        )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     with right:
         platform_totals = df.groupby("store", as_index=False)["downloads"].sum()
@@ -338,6 +400,7 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
             color_discrete_map={"Apple": "#1a73e8", "Android": "#34a853"},
         )
         fig.update_layout(height=320, margin=dict(l=0, r=0, t=8, b=0), showlegend=True)
+        fig.update_traces(hovertemplate="<b>%{label}</b><br>%{value:,} downloads<br>%{percent}<extra></extra>")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -346,14 +409,28 @@ def render_user_trends(users_daily: pd.DataFrame) -> None:
     if df.empty:
         st.info("No user trend data returned for this date range.")
         return
+    trend_df = df.melt(
+        id_vars="date",
+        value_vars=["activeUsers", "newUsers"],
+        var_name="metric",
+        value_name="users",
+    )
+    trend_df["metric"] = trend_df["metric"].map({"activeUsers": "Active users", "newUsers": "New users"})
     fig = px.area(
-        df,
+        trend_df,
         x="date",
-        y=["activeUsers", "newUsers"],
-        labels={"value": "Users", "variable": "Metric"},
+        y="users",
+        color="metric",
+        labels={"users": "Users", "metric": "Metric", "date": "Date"},
         color_discrete_sequence=["#1a73e8", "#fbbc04"],
     )
-    fig.update_layout(height=320, margin=dict(l=0, r=0, t=8, b=0), legend=dict(orientation="h", y=1.12))
+    fig.update_traces(hovertemplate="<b>%{y:,} users</b><br>%{x|%b %-d, %Y}<extra>%{fullData.name}</extra>")
+    fig.update_layout(
+        height=320,
+        margin=dict(l=0, r=0, t=8, b=0),
+        legend=dict(orientation="h", y=1.12),
+        hovermode="x unified",
+    )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 

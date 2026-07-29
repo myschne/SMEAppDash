@@ -299,19 +299,34 @@ def fetch_app_store_downloads(config: dict[str, Any], start: date, end: date) ->
 
     frames = []
     missing_reports = 0
+    failed_reports = 0
     for report_date in each_day(start, end):
         try:
             report = app_store_report_bytes(app_config, report_date)
         except HTTPError as error:
-            if error.code in {404, 409}:
+            if error.code in {404, 409, 500, 502, 503, 504}:
+                if error.code in {500, 502, 503, 504}:
+                    failed_reports += 1
+                else:
+                    missing_reports += 1
+                continue
+            raise
+        except URLError:
+            failed_reports += 1
+            continue
+        try:
+            frames.append(parse_app_store_daily(report, app_config, report_date))
+        except StoreDownloadError as error:
+            if "No matching" in str(error):
                 missing_reports += 1
                 continue
             raise
-        frames.append(parse_app_store_daily(report, app_config, report_date))
 
     notes = [f"Loaded App Store Connect daily sales reports for {len(frames)} day(s)."]
     if missing_reports:
         notes.append(f"Skipped {missing_reports} App Store day(s) with unavailable reports.")
+    if failed_reports:
+        notes.append(f"Skipped {failed_reports} App Store day(s) with temporary API errors.")
     if not frames:
         return pd.DataFrame(columns=["date", "store", "downloads"]), notes
     return filter_download_dates(pd.concat(frames, ignore_index=True), start, end), notes
@@ -351,7 +366,23 @@ def fetch_store_downloads(start: date, end: date, config_path: str | Path | None
     downloads = pd.concat(frames, ignore_index=True)
     downloads = downloads.groupby(["date", "store"], as_index=False)["downloads"].sum()
     downloads["date"] = pd.to_datetime(downloads["date"])
-    return StoreDownloadResult(downloads, notes)
+    return StoreDownloadResult(complete_store_series(downloads, start, end, config), notes)
+
+
+def complete_store_series(df: pd.DataFrame, start: date, end: date, config: dict[str, Any]) -> pd.DataFrame:
+    stores = []
+    if config.get("google_play", {}).get("enabled", False):
+        stores.append("Android")
+    if config.get("app_store", {}).get("enabled", False):
+        stores.append("Apple")
+    if not stores:
+        stores = sorted(df["store"].dropna().unique().tolist())
+
+    dates = pd.date_range(start=start, end=end, freq="D")
+    skeleton = pd.MultiIndex.from_product([dates, stores], names=["date", "store"]).to_frame(index=False)
+    merged = skeleton.merge(df, on=["date", "store"], how="left")
+    merged["downloads"] = merged["downloads"].fillna(0).astype(int)
+    return merged
 
 
 def api_error_message(error: Exception) -> str:
