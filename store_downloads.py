@@ -36,6 +36,13 @@ class StoreDownloadError(RuntimeError):
     pass
 
 
+def normalize_private_key(private_key: str) -> str:
+    normalized = str(private_key).strip().replace("\\n", "\n")
+    if "BEGIN PRIVATE KEY" not in normalized:
+        normalized = f"-----BEGIN PRIVATE KEY-----\n{normalized}\n-----END PRIVATE KEY-----"
+    return normalized
+
+
 @dataclass(frozen=True)
 class StoreDownloadResult:
     downloads_daily: pd.DataFrame
@@ -89,6 +96,9 @@ def make_google_credentials(config: dict[str, Any]) -> Any:
     if auth_mode == "service_account":
         service_account_info = play_config.get("service_account") or config.get("service_account")
         if service_account_info:
+            service_account_info = dict(service_account_info)
+            if service_account_info.get("private_key"):
+                service_account_info["private_key"] = normalize_private_key(service_account_info["private_key"])
             return service_account.Credentials.from_service_account_info(
                 service_account_info,
                 scopes=[READONLY_SCOPE],
@@ -220,7 +230,7 @@ def app_store_key_id(app_config: dict[str, Any]) -> str:
 def app_store_private_key(app_config: dict[str, Any]) -> ec.EllipticCurvePrivateKey:
     private_key = app_config.get("private_key")
     if private_key:
-        key = serialization.load_pem_private_key(private_key.encode("utf-8"), password=None)
+        key = serialization.load_pem_private_key(normalize_private_key(private_key).encode("utf-8"), password=None)
         if not isinstance(key, ec.EllipticCurvePrivateKey):
             raise StoreDownloadError("App Store Connect private key must be an EC private key.")
         return key

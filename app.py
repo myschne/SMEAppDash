@@ -68,11 +68,29 @@ def secrets_section(name: str) -> dict:
     return json.loads(json.dumps(section.to_dict() if hasattr(section, "to_dict") else dict(section)))
 
 
+def normalize_private_key(secret_info: dict | None) -> dict | None:
+    if not secret_info:
+        return secret_info
+    output = dict(secret_info)
+    private_key = output.get("private_key")
+    if not private_key:
+        return output
+
+    private_key = str(private_key).strip().replace("\\n", "\n")
+    if "BEGIN PRIVATE KEY" not in private_key:
+        private_key = f"-----BEGIN PRIVATE KEY-----\n{private_key}\n-----END PRIVATE KEY-----"
+    output["private_key"] = private_key
+    return output
+
+
 def get_store_config() -> dict | None:
     google_play = secrets_section("google_play")
     app_store = secrets_section("app_store")
     if not google_play and not app_store:
         return None
+    if google_play.get("service_account"):
+        google_play["service_account"] = normalize_private_key(google_play["service_account"])
+    app_store = normalize_private_key(app_store) or {}
     return {
         "auth_mode": google_play.get("auth_mode", "service_account"),
         "google_play": google_play,
@@ -81,7 +99,7 @@ def get_store_config() -> dict | None:
 
 
 def get_ga_service_account_info() -> dict | None:
-    return secrets_section("ga4_service_account") or None
+    return normalize_private_key(secrets_section("ga4_service_account")) or None
 
 
 def get_service_account_file() -> Path:
