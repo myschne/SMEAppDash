@@ -496,26 +496,35 @@ def render_user_trends(users_daily: pd.DataFrame) -> None:
     if df.empty:
         st.info("No user trend data returned for this date range.")
         return
-    trend_df = df.melt(
-        id_vars="date",
-        value_vars=["activeUsers", "newUsers"],
-        var_name="metric",
-        value_name="users",
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["activeUsers"],
+            mode="lines+markers",
+            name="Active users",
+            line=dict(color="#1a73e8", width=2),
+            marker=dict(size=6),
+            hovertemplate="<b>Active users</b><br>%{x|%b %-d, %Y}<br>%{y:,} users<extra></extra>",
+        )
     )
-    trend_df["metric"] = trend_df["metric"].map({"activeUsers": "Active users", "newUsers": "New users"})
-    fig = px.area(
-        trend_df,
-        x="date",
-        y="users",
-        color="metric",
-        labels={"users": "Users", "metric": "Metric", "date": "Date"},
-        color_discrete_sequence=["#1a73e8", "#fbbc04"],
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["newUsers"],
+            mode="lines+markers",
+            name="New users",
+            line=dict(color="#fbbc04", width=2),
+            marker=dict(size=6),
+            hovertemplate="<b>New users</b><br>%{x|%b %-d, %Y}<br>%{y:,} users<extra></extra>",
+        )
     )
-    fig.update_traces(hovertemplate="<b>%{y:,} users</b><br>%{x|%b %-d, %Y}<extra>%{fullData.name}</extra>")
     fig.update_layout(
         height=320,
         margin=dict(l=0, r=0, t=8, b=0),
         legend=dict(orientation="h", y=1.12),
+        xaxis_title="Date",
+        yaxis_title="Users",
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
