@@ -25,6 +25,8 @@ or Streamlit secrets:
 GA_PROPERTY_ID = "123456789"
 ```
 
+Use `.streamlit/secrets.toml.template` as the full local secrets template.
+
 4. Run:
 
 ```powershell

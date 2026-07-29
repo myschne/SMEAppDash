@@ -48,8 +48,21 @@ def get_property_id() -> str:
     return os.getenv("GA_PROPERTY_ID", secret_value).strip()
 
 
+def get_store_config_path() -> str | None:
+    try:
+        secret_value = st.secrets.get("APP_STORES_CONFIG", "")
+    except Exception:
+        secret_value = ""
+    configured = os.getenv("APP_STORES_CONFIG", secret_value).strip()
+    return configured or None
+
+
 def get_service_account_file() -> Path:
-    credential_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    try:
+        secret_value = st.secrets.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    except Exception:
+        secret_value = ""
+    credential_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", secret_value).strip()
     if credential_path:
         return Path(credential_path).expanduser()
 
@@ -173,8 +186,13 @@ def run_realtime_report(config: GaConfig, dimensions: list[str], limit: int = 10
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_dashboard_data(config: GaConfig, start: date, end: date) -> dict[str, pd.DataFrame]:
-    store_downloads = fetch_store_downloads(start, end)
+def load_dashboard_data(
+    config: GaConfig,
+    start: date,
+    end: date,
+    store_config_path: str | None = None,
+) -> dict[str, pd.DataFrame]:
+    store_downloads = fetch_store_downloads(start, end, store_config_path)
     users_daily = run_report(
         config,
         dimensions=["date"],
@@ -516,6 +534,7 @@ def main() -> None:
     st.caption("App Store Connect, Google Play, and Google Analytics usage dashboard")
 
     property_id = get_property_id()
+    store_config_path = get_store_config_path()
     service_account_file = get_service_account_file()
     if not service_account_file.exists():
         st.error(f"Service account file not found: {service_account_file}")
@@ -542,7 +561,7 @@ def main() -> None:
 
     with st.spinner("Loading app store and Google Analytics data..."):
         try:
-            data = load_dashboard_data(config, start, end)
+            data = load_dashboard_data(config, start, end, store_config_path)
         except Exception as exc:
             st.error("Dashboard data could not be loaded.")
             st.exception(exc)
