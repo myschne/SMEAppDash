@@ -38,9 +38,11 @@ class StoreDownloadError(RuntimeError):
 
 def normalize_private_key(private_key: str) -> str:
     normalized = str(private_key).strip().replace("\\n", "\n")
-    if "BEGIN PRIVATE KEY" not in normalized:
-        normalized = f"-----BEGIN PRIVATE KEY-----\n{normalized}\n-----END PRIVATE KEY-----"
-    return normalized
+    normalized = normalized.replace("-----BEGIN PRIVATE KEY-----", "")
+    normalized = normalized.replace("-----END PRIVATE KEY-----", "")
+    body = "".join(normalized.split())
+    lines = [body[index : index + 64] for index in range(0, len(body), 64)]
+    return "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
 
 
 @dataclass(frozen=True)

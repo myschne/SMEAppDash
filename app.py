@@ -76,11 +76,17 @@ def normalize_private_key(secret_info: dict | None) -> dict | None:
     if not private_key:
         return output
 
-    private_key = str(private_key).strip().replace("\\n", "\n")
-    if "BEGIN PRIVATE KEY" not in private_key:
-        private_key = f"-----BEGIN PRIVATE KEY-----\n{private_key}\n-----END PRIVATE KEY-----"
-    output["private_key"] = private_key
+    output["private_key"] = rebuild_pem_private_key(str(private_key))
     return output
+
+
+def rebuild_pem_private_key(private_key: str) -> str:
+    normalized = private_key.strip().replace("\\n", "\n")
+    normalized = normalized.replace("-----BEGIN PRIVATE KEY-----", "")
+    normalized = normalized.replace("-----END PRIVATE KEY-----", "")
+    body = "".join(normalized.split())
+    lines = [body[index : index + 64] for index in range(0, len(body), 64)]
+    return "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
 
 
 def get_store_config() -> dict | None:
