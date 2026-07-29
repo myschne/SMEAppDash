@@ -254,9 +254,14 @@ def metric_card(label: str, value: str, help_text: str | None = None) -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_ranked_table(df: pd.DataFrame, label_column: str, metric_column: str = "activeUsers") -> None:
+def render_ranked_table(
+    df: pd.DataFrame,
+    label_column: str,
+    metric_column: str = "activeUsers",
+    empty_message: str = "No data available.",
+) -> None:
     if df.empty:
-        st.caption("No realtime data available.")
+        st.caption(empty_message)
         return
     table_df = df[[label_column, metric_column]].copy()
     label_map = {
@@ -305,10 +310,14 @@ def render_realtime_card(data: dict[str, pd.DataFrame]) -> None:
             )
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         else:
-            st.info("Realtime minute data is not available yet.")
+            st.info("No app users active in the last 30 minutes.")
 
         st.caption("TOP COUNTRIES")
-        render_ranked_table(top_countries, "country")
+        render_ranked_table(
+            top_countries,
+            "country",
+            empty_message="No app users active in this realtime window.",
+        )
 
 
 def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
@@ -436,11 +445,8 @@ def render_user_trends(users_daily: pd.DataFrame) -> None:
 
 def render_device_models(device_models: pd.DataFrame) -> None:
     with st.container(border=True):
-        header_left, header_right = st.columns([1, 0.2])
-        with header_left:
-            st.markdown("**Active users by device model**")
-        with header_right:
-            status_pill()
+        st.markdown("**Active users by device model**")
+        st.caption("Selected date range")
         render_ranked_table(device_models, "deviceModel")
 
 
@@ -451,7 +457,11 @@ def render_device_categories(device_categories: pd.DataFrame) -> None:
             st.markdown("**Realtime users by device category**")
         with header_right:
             status_pill()
-        render_ranked_table(device_categories, "deviceCategory")
+        render_ranked_table(
+            device_categories,
+            "deviceCategory",
+            empty_message="No app users active in this realtime window.",
+        )
 
 
 def apply_styles() -> None:
