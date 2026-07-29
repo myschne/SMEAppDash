@@ -1,5 +1,7 @@
 .streamlit/secrets.toml
 config/*.json
+!config/*.example.json
+config/*.p8
 __pycache__/
 *.pyc
 .venv/

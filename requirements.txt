@@ -1,5 +1,7 @@
 streamlit>=1.37
 google-analytics-data>=0.18
 google-auth>=2.30
+google-auth-oauthlib>=1.2
 pandas>=2.2
 plotly>=5.22
+cryptography>=42

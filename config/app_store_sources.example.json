@@ -1,0 +1,29 @@
+{
+  "auth_mode": "service_account",
+  "service_account_file": "C:\\Path\\To\\google-play-service-account.json",
+  "google_play": {
+    "enabled": true,
+    "bucket_id": "pubsite_prod_0000000000000000000",
+    "package_name": "com.smemedia.android",
+    "report_object_template": "stats/installs/installs_{package_name}_{year_month}_country.csv",
+    "encoding": "utf-16",
+    "metric_column": "Daily User Installs",
+    "report_date_column": "Date"
+  },
+  "app_store": {
+    "enabled": true,
+    "key_type": "team",
+    "private_key_file": "C:\\Path\\To\\AuthKey_KEYID.p8",
+    "key_id": "KEYID",
+    "issuer_id": "00000000-0000-0000-0000-000000000000",
+    "vendor_number": "00000000",
+    "report_subtype": "SUMMARY",
+    "report_type": "SALES",
+    "version": "1_0",
+    "encoding": "utf-8-sig",
+    "units_column": "Units",
+    "product_type_identifiers": ["1", "1F", "1T"],
+    "skus": ["com.smemedia.ios"],
+    "apple_ids": ["6494275046"]
+  }
+}

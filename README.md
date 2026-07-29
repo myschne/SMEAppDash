@@ -1,6 +1,6 @@
 # Advanced Manufacturing App Analytics Dashboard
 
-Streamlit dashboard for GA4 app usage metrics.
+Streamlit dashboard for app store downloads and GA4 usage metrics.
 
 ## Setup
 
@@ -10,7 +10,7 @@ Streamlit dashboard for GA4 app usage metrics.
 pip install -r requirements.txt
 ```
 
-2. Put the Google service account JSON in `config/`, or set `GOOGLE_APPLICATION_CREDENTIALS` to its path. Make sure the GA4 property has granted Viewer access to the service account email.
+2. Put the GA4 Google service account JSON in `config/`, or set `GOOGLE_APPLICATION_CREDENTIALS` to its path. Make sure the GA4 property has granted Viewer access to the service account email.
 
 3. Provide the GA4 numeric property ID with either an environment variable:
 
@@ -31,6 +31,26 @@ GA_PROPERTY_ID = "123456789"
 streamlit run app.py
 ```
 
-## Notes
+## Store Downloads
 
-GA4 does not expose App Store / Play Store download counts directly through the Analytics Data API. This dashboard treats the GA4 `first_open` event as installs/downloads. If the app sends a custom download/install event, update `DOWNLOAD_EVENT_NAME` in `app.py`.
+Downloads come from Apple App Store Connect Sales and Trends and Google Play Console bulk install reports.
+
+By default, the dashboard reuses the existing Scorecards config at:
+
+```text
+..\Scorecards\config\google_play_sources.json
+```
+
+You can override that with:
+
+```powershell
+$env:APP_STORES_CONFIG="C:\Path\To\app_store_sources.json"
+```
+
+For a local config shape, see:
+
+```text
+config/app_store_sources.example.json
+```
+
+Real files under `config/*.json` and `config/*.p8` are ignored so API keys and service account files do not get committed.

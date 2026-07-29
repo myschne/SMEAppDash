@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,10 +24,11 @@ from google.analytics.data_v1beta.types import (
 )
 from google.oauth2 import service_account
 
+from store_downloads import fetch_store_downloads
+
 
 APP_NAME = "Advanced Manufacturing App"
 CONFIG_DIR = Path(__file__).parent / "config"
-DOWNLOAD_EVENT_NAME = "first_open"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 
 
@@ -49,9 +51,13 @@ def get_service_account_file() -> Path:
     if credential_path:
         return Path(credential_path).expanduser()
 
-    candidates = sorted(CONFIG_DIR.glob("*.json"))
-    if candidates:
-        return candidates[0]
+    for candidate in sorted(CONFIG_DIR.glob("*.json")):
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("type") == "service_account" and payload.get("client_email") and payload.get("token_uri"):
+            return candidate
 
     return CONFIG_DIR / "service-account.json"
 
@@ -141,14 +147,7 @@ def run_realtime_report(config: GaConfig, dimensions: list[str], limit: int = 10
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_dashboard_data(config: GaConfig, start: date, end: date) -> dict[str, pd.DataFrame]:
-    downloads_daily = run_report(
-        config,
-        dimensions=["date", "operatingSystem"],
-        metrics=["eventCount"],
-        start=start,
-        end=end,
-        event_name=DOWNLOAD_EVENT_NAME,
-    )
+    store_downloads = fetch_store_downloads(start, end)
     users_daily = run_report(
         config,
         dimensions=["date"],
@@ -183,7 +182,8 @@ def load_dashboard_data(config: GaConfig, start: date, end: date) -> dict[str, p
     top_countries = run_realtime_report(config, ["country"], limit=8)
     realtime_minutes = run_realtime_report(config, ["minutesAgo"], limit=30)
     return {
-        "downloads_daily": downloads_daily,
+        "downloads_daily": store_downloads.downloads_daily,
+        "download_notes": pd.DataFrame({"note": store_downloads.notes}),
         "users_daily": users_daily,
         "engagement_daily": engagement_daily,
         "summary": summary,
@@ -198,7 +198,7 @@ def normalize_date_column(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "date" not in df:
         return df
     output = df.copy()
-    output["date"] = pd.to_datetime(output["date"], format="%Y%m%d")
+    output["date"] = pd.to_datetime(output["date"])
     return output
 
 
@@ -311,29 +311,28 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
 def render_downloads(downloads_daily: pd.DataFrame) -> None:
     df = normalize_date_column(downloads_daily)
     if df.empty:
-        st.info("No install/download events returned for this date range.")
+        st.info("No store download data returned for this date range.")
         return
-    df["store"] = df["operatingSystem"].map(platform_label)
 
     left, right = st.columns([1.4, 1])
     with left:
         fig = px.line(
-            df.groupby(["date", "store"], as_index=False)["eventCount"].sum(),
+            df.groupby(["date", "store"], as_index=False)["downloads"].sum(),
             x="date",
-            y="eventCount",
+            y="downloads",
             color="store",
             markers=True,
-            labels={"eventCount": "Downloads", "store": "Platform"},
+            labels={"downloads": "Downloads", "store": "Store"},
             color_discrete_map={"Apple": "#1a73e8", "Android": "#34a853"},
         )
         fig.update_layout(height=320, margin=dict(l=0, r=0, t=8, b=0), legend=dict(orientation="h", y=1.12))
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     with right:
-        platform_totals = df.groupby("store", as_index=False)["eventCount"].sum()
+        platform_totals = df.groupby("store", as_index=False)["downloads"].sum()
         fig = px.pie(
             platform_totals,
             names="store",
-            values="eventCount",
+            values="downloads",
             hole=0.55,
             color="store",
             color_discrete_map={"Apple": "#1a73e8", "Android": "#34a853"},
@@ -427,7 +426,7 @@ def main() -> None:
     apply_styles()
 
     st.title(f"{APP_NAME} Analytics")
-    st.caption("Google Analytics 4 app usage dashboard")
+    st.caption("App Store Connect, Google Play, and Google Analytics usage dashboard")
 
     property_id = get_property_id()
     service_account_file = get_service_account_file()
@@ -440,7 +439,7 @@ def main() -> None:
         today = date.today()
         default_start = today - timedelta(days=30)
         start, end = st.date_input("Date range", value=(default_start, today), max_value=today)
-        st.caption("Uses GA4 `first_open` events as installs/downloads.")
+        st.caption("Downloads come from App Store Connect and Google Play.")
         refresh = st.button("Refresh data", type="primary", use_container_width=True)
 
     if refresh:
@@ -454,15 +453,15 @@ def main() -> None:
 
     config = GaConfig(property_id=property_id, service_account_file=service_account_file)
 
-    with st.spinner("Loading Google Analytics data..."):
+    with st.spinner("Loading app store and Google Analytics data..."):
         try:
             data = load_dashboard_data(config, start, end)
         except Exception as exc:
-            st.error("Google Analytics could not be loaded.")
+            st.error("Dashboard data could not be loaded.")
             st.exception(exc)
             st.stop()
 
-    downloads_total = int(data["downloads_daily"]["eventCount"].sum()) if not data["downloads_daily"].empty else 0
+    downloads_total = int(data["downloads_daily"]["downloads"].sum()) if not data["downloads_daily"].empty else 0
     summary = data["summary"]
     active_users = int(summary["activeUsers"].iloc[0]) if not summary.empty else 0
     new_users = int(summary["newUsers"].iloc[0]) if not summary.empty else 0
@@ -475,7 +474,7 @@ def main() -> None:
 
     metric_cols = st.columns(4)
     with metric_cols[0]:
-        metric_card("Downloads", f"{downloads_total:,}", f"`{DOWNLOAD_EVENT_NAME}` events")
+        metric_card("Store downloads", f"{downloads_total:,}", "Apple App Store + Google Play")
     with metric_cols[1]:
         metric_card("Active users", f"{active_users:,}")
     with metric_cols[2]:
@@ -494,6 +493,13 @@ def main() -> None:
 
     st.subheader("Downloads and platform breakdown")
     render_downloads(data["downloads_daily"])
+    with st.expander("Download source notes"):
+        notes = data["download_notes"]
+        if notes.empty:
+            st.caption("No download source notes.")
+        else:
+            for note in notes["note"].tolist():
+                st.caption(note)
 
     st.subheader("User trends")
     render_user_trends(data["users_daily"])
