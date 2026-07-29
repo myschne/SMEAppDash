@@ -51,12 +51,15 @@ def resolve_config_path() -> Path:
     return DEFAULT_CONFIG
 
 
-def load_store_config(config_path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
+def load_store_config(config_path: str | Path | dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
+    if isinstance(config_path, dict):
+        return config_path, "Streamlit secrets"
+
     path = Path(config_path).expanduser() if config_path else resolve_config_path()
     if not path.exists():
         raise StoreDownloadError(f"Store download config not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle), path
+        return json.load(handle), str(path)
 
 
 def each_month(start: date, end: date) -> list[date]:
@@ -81,11 +84,19 @@ def each_day(start: date, end: date) -> list[date]:
 
 
 def make_google_credentials(config: dict[str, Any]) -> Any:
-    auth_mode = config.get("auth_mode", "oauth")
+    play_config = config.get("google_play", {})
+    auth_mode = play_config.get("auth_mode", config.get("auth_mode", "oauth"))
     if auth_mode == "service_account":
-        service_account_file = config.get("service_account_file")
+        service_account_info = play_config.get("service_account") or config.get("service_account")
+        if service_account_info:
+            return service_account.Credentials.from_service_account_info(
+                service_account_info,
+                scopes=[READONLY_SCOPE],
+            )
+
+        service_account_file = play_config.get("service_account_file") or config.get("service_account_file")
         if not service_account_file:
-            raise StoreDownloadError("Google Play service_account_file is not configured.")
+            raise StoreDownloadError("Google Play service account credentials are not configured.")
         return service_account.Credentials.from_service_account_file(
             str(Path(service_account_file).expanduser()),
             scopes=[READONLY_SCOPE],
@@ -207,6 +218,13 @@ def app_store_key_id(app_config: dict[str, Any]) -> str:
 
 
 def app_store_private_key(app_config: dict[str, Any]) -> ec.EllipticCurvePrivateKey:
+    private_key = app_config.get("private_key")
+    if private_key:
+        key = serialization.load_pem_private_key(private_key.encode("utf-8"), password=None)
+        if not isinstance(key, ec.EllipticCurvePrivateKey):
+            raise StoreDownloadError("App Store Connect private key must be an EC private key.")
+        return key
+
     key_file = Path(app_config.get("private_key_file", "")).expanduser()
     if not key_file.exists():
         raise StoreDownloadError(f"App Store Connect private key file does not exist: {key_file}")
@@ -340,7 +358,11 @@ def filter_download_dates(df: pd.DataFrame, start: date, end: date) -> pd.DataFr
     return output[(output["date"] >= start) & (output["date"] <= end)]
 
 
-def fetch_store_downloads(start: date, end: date, config_path: str | Path | None = None) -> StoreDownloadResult:
+def fetch_store_downloads(
+    start: date,
+    end: date,
+    config_path: str | Path | dict[str, Any] | None = None,
+) -> StoreDownloadResult:
     config, loaded_path = load_store_config(config_path)
     notes = [f"Loaded store config from {loaded_path}."]
     frames = []

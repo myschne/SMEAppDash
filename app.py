@@ -37,7 +37,8 @@ APP_PLATFORMS = ["Android", "iOS"]
 @dataclass(frozen=True)
 class GaConfig:
     property_id: str
-    service_account_file: Path
+    service_account_file: Path | None = None
+    service_account_info: dict | None = None
 
 
 def get_property_id() -> str:
@@ -55,6 +56,32 @@ def get_store_config_path() -> str | None:
         secret_value = ""
     configured = os.getenv("APP_STORES_CONFIG", secret_value).strip()
     return configured or None
+
+
+def secrets_section(name: str) -> dict:
+    try:
+        section = st.secrets.get(name)
+    except Exception:
+        return {}
+    if not section:
+        return {}
+    return json.loads(json.dumps(section.to_dict() if hasattr(section, "to_dict") else dict(section)))
+
+
+def get_store_config() -> dict | None:
+    google_play = secrets_section("google_play")
+    app_store = secrets_section("app_store")
+    if not google_play and not app_store:
+        return None
+    return {
+        "auth_mode": google_play.get("auth_mode", "service_account"),
+        "google_play": google_play,
+        "app_store": app_store,
+    }
+
+
+def get_ga_service_account_info() -> dict | None:
+    return secrets_section("ga4_service_account") or None
 
 
 def get_service_account_file() -> Path:
@@ -78,12 +105,21 @@ def get_service_account_file() -> Path:
 
 
 @st.cache_resource(show_spinner=False)
-def get_client(service_account_file: str) -> BetaAnalyticsDataClient:
-    credentials = service_account.Credentials.from_service_account_file(
-        service_account_file,
-        scopes=SCOPES,
-    )
+def get_client_from_file(service_account_file: str) -> BetaAnalyticsDataClient:
+    credentials = service_account.Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
     return BetaAnalyticsDataClient(credentials=credentials)
+
+
+def get_client(config: GaConfig) -> BetaAnalyticsDataClient:
+    if config.service_account_info:
+        credentials = service_account.Credentials.from_service_account_info(
+            config.service_account_info,
+            scopes=SCOPES,
+        )
+        return BetaAnalyticsDataClient(credentials=credentials)
+    if not config.service_account_file:
+        raise ValueError("GA4 service account credentials are not configured.")
+    return get_client_from_file(str(config.service_account_file))
 
 
 def metric_value(row, index: int, cast=float):
@@ -167,12 +203,12 @@ def run_report(
     if order_metric:
         request.order_bys = [OrderBy(metric=OrderBy.MetricOrderBy(metric_name=order_metric), desc=True)]
 
-    response = get_client(str(config.service_account_file)).run_report(request)
+    response = get_client(config).run_report(request)
     return rows_to_dataframe(response, dimensions, metrics)
 
 
 def run_realtime_report(config: GaConfig, dimensions: list[str], limit: int = 10, app_only: bool = True) -> pd.DataFrame:
-    response = get_client(str(config.service_account_file)).run_realtime_report(
+    response = get_client(config).run_realtime_report(
         RunRealtimeReportRequest(
             property=f"properties/{config.property_id}",
             dimensions=[Dimension(name=name) for name in dimensions],
@@ -185,14 +221,14 @@ def run_realtime_report(config: GaConfig, dimensions: list[str], limit: int = 10
     return rows_to_dataframe(response, dimensions, ["activeUsers"])
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def load_dashboard_data(
     config: GaConfig,
     start: date,
     end: date,
     store_config_path: str | None = None,
+    store_config: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
-    store_downloads = fetch_store_downloads(start, end, store_config_path)
+    store_downloads = fetch_store_downloads(start, end, store_config or store_config_path)
     users_daily = run_report(
         config,
         dimensions=["date"],
@@ -535,8 +571,10 @@ def main() -> None:
 
     property_id = get_property_id()
     store_config_path = get_store_config_path()
+    store_config = get_store_config()
+    ga_service_account_info = get_ga_service_account_info()
     service_account_file = get_service_account_file()
-    if not service_account_file.exists():
+    if not ga_service_account_info and not service_account_file.exists():
         st.error(f"Service account file not found: {service_account_file}")
         st.stop()
 
@@ -557,11 +595,15 @@ def main() -> None:
         st.warning("Add `GA_PROPERTY_ID` in your environment or `.streamlit/secrets.toml` to load data.")
         st.stop()
 
-    config = GaConfig(property_id=property_id, service_account_file=service_account_file)
+    config = GaConfig(
+        property_id=property_id,
+        service_account_file=None if ga_service_account_info else service_account_file,
+        service_account_info=ga_service_account_info,
+    )
 
     with st.spinner("Loading app store and Google Analytics data..."):
         try:
-            data = load_dashboard_data(config, start, end, store_config_path)
+            data = load_dashboard_data(config, start, end, store_config_path, store_config)
         except Exception as exc:
             st.error("Dashboard data could not be loaded.")
             st.exception(exc)
