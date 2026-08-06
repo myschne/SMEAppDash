@@ -33,6 +33,8 @@ DEPLOY_VERSION = "date-inputs-2026-08-06"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
+DISPLAY_AD_START_DATE = date(2026, 8, 6)
+DISPLAY_AD_END_NOTE = "December 2026"
 
 
 @dataclass(frozen=True)
@@ -470,6 +472,14 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
             color_discrete_map={"Apple": "#1a73e8", "Android": "#34a853"},
         )
         fig.update_traces(hovertemplate="<b>%{y:,} downloads</b><br>%{x|%b %-d, %Y}<extra>%{fullData.name}</extra>")
+        if df["date"].min().date() <= DISPLAY_AD_START_DATE <= df["date"].max().date():
+            fig.add_vline(
+                x=DISPLAY_AD_START_DATE,
+                line_color="#ff6b6b",
+                line_dash="dash",
+                annotation_text="Display ads started",
+                annotation_position="top left",
+            )
         fig.update_layout(
             height=320,
             margin=dict(l=0, r=0, t=8, b=0),
@@ -680,6 +690,11 @@ def main() -> None:
         render_device_categories(data["device_categories"])
 
     st.subheader("Downloads and platform breakdown")
+    st.info(
+        "Display ads on advancedmanufacturing.org started August 6, 2026 for targeted devices "
+        f"to drive app downloads and are planned to run through {DISPLAY_AD_END_NOTE}. "
+        "Organic social promotion is also active; paid social has not started yet."
+    )
     render_downloads(data["downloads_daily"])
     with st.expander("Download source notes"):
         notes = data["download_notes"]
