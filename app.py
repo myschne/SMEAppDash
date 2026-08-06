@@ -615,9 +615,18 @@ def main() -> None:
         st.header("Controls")
         today = date.today()
         default_start = today - timedelta(days=30)
-        start, end = st.date_input("Date range", value=(default_start, today), max_value=today)
+        selected_range = st.date_input("Date range", value=(default_start, today), max_value=today)
         st.caption("Downloads come from App Store Connect and Google Play.")
         refresh = st.button("Refresh data", type="primary", use_container_width=True)
+
+    if isinstance(selected_range, tuple):
+        if len(selected_range) < 2:
+            st.info("Choose an end date to load the dashboard.")
+            st.stop()
+        start, end = selected_range
+    else:
+        st.info("Choose a start and end date to load the dashboard.")
+        st.stop()
 
     if refresh:
         st.cache_data.clear()
