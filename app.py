@@ -354,7 +354,7 @@ def render_ranked_table(
     st.dataframe(
         table_df,
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         column_config={"Active Users": st.column_config.NumberColumn(format="%d")},
     )
 
@@ -389,7 +389,7 @@ def render_realtime_card(data: dict[str, pd.DataFrame]) -> None:
                 bargap=0.15,
                 showlegend=False,
             )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
         else:
             st.info("No app users active in the last 30 minutes.")
 
@@ -440,7 +440,7 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
         yaxis2=dict(title="Sessions", overlaying="y", side="right", showgrid=False),
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_downloads(downloads_daily: pd.DataFrame) -> None:
@@ -473,12 +473,27 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
         )
         fig.update_traces(hovertemplate="<b>%{y:,} downloads</b><br>%{x|%b %-d, %Y}<extra>%{fullData.name}</extra>")
         if df["date"].min().date() <= DISPLAY_AD_START_DATE <= df["date"].max().date():
-            fig.add_vline(
-                x=DISPLAY_AD_START_DATE,
-                line_color="#ff6b6b",
-                line_dash="dash",
-                annotation_text="Display ads started",
-                annotation_position="top left",
+            marker_date = pd.Timestamp(DISPLAY_AD_START_DATE)
+            fig.add_shape(
+                type="line",
+                x0=marker_date,
+                x1=marker_date,
+                y0=0,
+                y1=1,
+                xref="x",
+                yref="paper",
+                line=dict(color="#ff6b6b", dash="dash", width=2),
+            )
+            fig.add_annotation(
+                x=marker_date,
+                y=1,
+                xref="x",
+                yref="paper",
+                text="Display ads started",
+                showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
+                font=dict(color="#ff6b6b"),
             )
         fig.update_layout(
             height=320,
@@ -486,7 +501,7 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
             legend=dict(orientation="h", y=1.12),
             hovermode="x unified",
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     with right:
         platform_totals = df.groupby("store", as_index=False)["downloads"].sum()
         fig = px.pie(
@@ -499,7 +514,7 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
         )
         fig.update_layout(height=320, margin=dict(l=0, r=0, t=8, b=0), showlegend=True)
         fig.update_traces(hovertemplate="<b>%{label}</b><br>%{value:,} downloads<br>%{percent}<extra></extra>")
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_user_trends(users_daily: pd.DataFrame) -> None:
@@ -538,7 +553,7 @@ def render_user_trends(users_daily: pd.DataFrame) -> None:
         yaxis_title="Users",
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def render_device_models(device_models: pd.DataFrame) -> None:
@@ -630,7 +645,7 @@ def main() -> None:
         start = st.date_input("Start date", value=default_start, max_value=today)
         end = st.date_input("End date", value=today, max_value=today)
         st.caption("Downloads come from App Store Connect and Google Play.")
-        refresh = st.button("Refresh data", type="primary", use_container_width=True)
+        refresh = st.button("Refresh data", type="primary", width="stretch")
 
     if start > end:
         st.warning("Start date must be on or before end date.")
