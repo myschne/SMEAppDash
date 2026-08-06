@@ -29,6 +29,7 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
+DEPLOY_VERSION = "date-inputs-2026-08-06"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
@@ -613,6 +614,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Controls")
+        st.caption(f"Build: {DEPLOY_VERSION}")
         today = date.today()
         default_start = today - timedelta(days=30)
         start = st.date_input("Start date", value=default_start, max_value=today)
