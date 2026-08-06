@@ -619,7 +619,7 @@ def main() -> None:
         st.caption("Downloads come from App Store Connect and Google Play.")
         refresh = st.button("Refresh data", type="primary", use_container_width=True)
 
-    if isinstance(selected_range, tuple):
+    if isinstance(selected_range, (tuple, list)):
         if len(selected_range) < 2:
             st.info("Choose an end date to load the dashboard.")
             st.stop()
