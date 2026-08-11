@@ -29,7 +29,7 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
-DEPLOY_VERSION = "all-chart-breakdowns-2026-08-11"
+DEPLOY_VERSION = "period-level-chart-breakdowns-2026-08-11"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
@@ -264,9 +264,37 @@ def load_dashboard_data(
         start=start,
         end=end,
     )
+    users_weekly = run_report(
+        config,
+        dimensions=["yearWeek"],
+        metrics=["activeUsers", "newUsers", "totalUsers"],
+        start=start,
+        end=end,
+    )
+    users_monthly = run_report(
+        config,
+        dimensions=["yearMonth"],
+        metrics=["activeUsers", "newUsers", "totalUsers"],
+        start=start,
+        end=end,
+    )
     engagement_daily = run_report(
         config,
         dimensions=["date"],
+        metrics=["userEngagementDuration", "activeUsers", "engagedSessions"],
+        start=start,
+        end=end,
+    )
+    engagement_weekly = run_report(
+        config,
+        dimensions=["yearWeek"],
+        metrics=["userEngagementDuration", "activeUsers", "engagedSessions"],
+        start=start,
+        end=end,
+    )
+    engagement_monthly = run_report(
+        config,
+        dimensions=["yearMonth"],
         metrics=["userEngagementDuration", "activeUsers", "engagedSessions"],
         start=start,
         end=end,
@@ -295,7 +323,11 @@ def load_dashboard_data(
         "downloads_daily": store_downloads.downloads_daily,
         "download_notes": pd.DataFrame({"note": store_downloads.notes}),
         "users_daily": users_daily,
+        "users_weekly": users_weekly,
+        "users_monthly": users_monthly,
         "engagement_daily": engagement_daily,
+        "engagement_weekly": engagement_weekly,
+        "engagement_monthly": engagement_monthly,
         "summary": summary,
         "top_countries": top_countries,
         "device_models": device_models,
@@ -410,25 +442,41 @@ def add_period_column(df: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
     return df.assign(period=df["date"])
 
 
-def aggregate_engagement_for_chart(engagement_daily: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
-    df = normalize_date_column(engagement_daily)
+def normalize_period_report(df: pd.DataFrame, period_column: str) -> pd.DataFrame:
+    if df.empty or period_column not in df:
+        return df
+
+    output = df.copy()
+    values = output[period_column].astype(str)
+    if period_column == "yearMonth":
+        output["period"] = pd.to_datetime(values + "01", format="%Y%m%d", errors="coerce")
+    elif period_column == "yearWeek":
+        output["period"] = pd.to_datetime(values.str.zfill(6) + "1", format="%G%V%u", errors="coerce")
+    return output.dropna(subset=["period"]).sort_values("period")
+
+
+def engagement_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    if breakdown_mode == "Weekly":
+        df = normalize_period_report(data.get("engagement_weekly", pd.DataFrame()), "yearWeek")
+    elif breakdown_mode == "Monthly":
+        df = normalize_period_report(data.get("engagement_monthly", pd.DataFrame()), "yearMonth")
+    else:
+        df = normalize_date_column(data.get("engagement_daily", pd.DataFrame()))
+        if not df.empty:
+            df = df.assign(period=df["date"])
+
     if df.empty:
         return df
 
-    df = add_period_column(df, breakdown_mode)
-    grouped = df.groupby("period", as_index=False).agg(
-        userEngagementDuration=("userEngagementDuration", "sum"),
-        activeUsers=("activeUsers", "sum"),
-        engagedSessions=("engagedSessions", "sum"),
-    )
-    grouped["average_engagement_seconds"] = (
-        grouped["userEngagementDuration"] / grouped["activeUsers"].replace(0, pd.NA)
+    output = df.copy()
+    output["average_engagement_seconds"] = (
+        output["userEngagementDuration"] / output["activeUsers"].replace(0, pd.NA)
     ).fillna(0).round(0)
-    return grouped
+    return output
 
 
-def render_engagement_chart(engagement_daily: pd.DataFrame, breakdown_mode: str) -> None:
-    df = aggregate_engagement_for_chart(engagement_daily, breakdown_mode)
+def render_engagement_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    df = engagement_for_chart(data, breakdown_mode)
     if df.empty:
         st.info("No engagement data returned for this date range.")
         return
@@ -551,22 +599,23 @@ def render_downloads(downloads_daily: pd.DataFrame, breakdown_mode: str) -> None
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
-def aggregate_user_trends_for_chart(users_daily: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
-    df = normalize_date_column(users_daily)
+def user_trends_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    if breakdown_mode == "Weekly":
+        df = normalize_period_report(data.get("users_weekly", pd.DataFrame()), "yearWeek")
+    elif breakdown_mode == "Monthly":
+        df = normalize_period_report(data.get("users_monthly", pd.DataFrame()), "yearMonth")
+    else:
+        df = normalize_date_column(data.get("users_daily", pd.DataFrame()))
+        if not df.empty:
+            df = df.assign(period=df["date"])
+
     if df.empty:
         return df
-
-    df = add_period_column(df, breakdown_mode)
-    if breakdown_mode == "Daily":
-        return df[["period", "activeUsers", "newUsers"]]
-    return df.groupby("period", as_index=False).agg(
-        activeUsers=("activeUsers", "mean"),
-        newUsers=("newUsers", "mean"),
-    ).round({"activeUsers": 0, "newUsers": 0})
+    return df[["period", "activeUsers", "newUsers"]].sort_values("period")
 
 
-def render_user_trends(users_daily: pd.DataFrame, breakdown_mode: str) -> None:
-    df = aggregate_user_trends_for_chart(users_daily, breakdown_mode)
+def render_user_trends(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    df = user_trends_for_chart(data, breakdown_mode)
     if df.empty:
         st.info("No user trend data returned for this date range.")
         return
@@ -847,10 +896,10 @@ def main() -> None:
                 st.caption(note)
 
     st.subheader("User trends")
-    render_user_trends(data["users_daily"], download_breakdown)
+    render_user_trends(data, download_breakdown)
 
     st.subheader("Engagement")
-    render_engagement_chart(data["engagement_daily"], download_breakdown)
+    render_engagement_chart(data, download_breakdown)
 
 
 if __name__ == "__main__":
