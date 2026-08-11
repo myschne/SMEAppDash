@@ -29,12 +29,13 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
-DEPLOY_VERSION = "date-inputs-2026-08-06"
+DEPLOY_VERSION = "comparison-kpis-2026-08-11"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
 DISPLAY_AD_START_DATE = date(2026, 8, 6)
 DISPLAY_AD_END_NOTE = "December 2026"
+DOWNLOAD_BREAKDOWN_MODES = ["Daily", "Weekly", "Monthly"]
 
 
 @dataclass(frozen=True)
@@ -443,7 +444,22 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
-def render_downloads(downloads_daily: pd.DataFrame) -> None:
+def aggregate_downloads_for_chart(downloads_daily: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
+    df = normalize_date_column(downloads_daily)
+    if df.empty:
+        return df
+
+    if breakdown_mode == "Weekly":
+        df = df.assign(period=df["date"].dt.to_period("W-SUN").dt.start_time)
+    elif breakdown_mode == "Monthly":
+        df = df.assign(period=df["date"].dt.to_period("M").dt.start_time)
+    else:
+        df = df.assign(period=df["date"])
+
+    return df.groupby(["period", "store"], as_index=False)["downloads"].sum()
+
+
+def render_downloads(downloads_daily: pd.DataFrame, breakdown_mode: str) -> None:
     df = normalize_date_column(downloads_daily)
     if df.empty:
         st.info("No store download data returned for this date range.")
@@ -462,13 +478,14 @@ def render_downloads(downloads_daily: pd.DataFrame) -> None:
 
     left, right = st.columns([1.4, 1])
     with left:
+        chart_df = aggregate_downloads_for_chart(df, breakdown_mode)
         fig = px.line(
-            df.groupby(["date", "store"], as_index=False)["downloads"].sum(),
-            x="date",
+            chart_df,
+            x="period",
             y="downloads",
             color="store",
             markers=True,
-            labels={"downloads": "Downloads", "store": "Store"},
+            labels={"downloads": "Downloads", "store": "Store", "period": breakdown_mode},
             color_discrete_map={"Apple": "#1a73e8", "Android": "#34a853"},
         )
         fig.update_traces(hovertemplate="<b>%{y:,} downloads</b><br>%{x|%b %-d, %Y}<extra>%{fullData.name}</extra>")
@@ -577,6 +594,72 @@ def render_device_categories(device_categories: pd.DataFrame) -> None:
         )
 
 
+
+def calculate_kpis(data: dict[str, pd.DataFrame]) -> dict[str, float]:
+    downloads_daily = data.get("downloads_daily", pd.DataFrame())
+    summary = data.get("summary", pd.DataFrame())
+
+    downloads_total = int(downloads_daily["downloads"].sum()) if not downloads_daily.empty else 0
+    active_users = int(summary["activeUsers"].iloc[0]) if not summary.empty else 0
+    new_users = int(summary["newUsers"].iloc[0]) if not summary.empty else 0
+    total_users = int(summary["totalUsers"].iloc[0]) if not summary.empty else 0
+    avg_engagement = (
+        float(summary["userEngagementDuration"].iloc[0]) / active_users
+        if active_users and not summary.empty
+        else 0
+    )
+    return {
+        "downloads": downloads_total,
+        "active_users": active_users,
+        "total_users": total_users,
+        "new_users": new_users,
+        "avg_engagement": avg_engagement,
+    }
+
+
+def render_primary_kpis(kpis: dict[str, float]) -> None:
+    metric_cols = st.columns(5)
+    with metric_cols[0]:
+        metric_card("Store downloads", f"{int(kpis['downloads']):,}", "Apple App Store + Google Play")
+    with metric_cols[1]:
+        metric_card("Active users", f"{int(kpis['active_users']):,}")
+    with metric_cols[2]:
+        metric_card("Total users", f"{int(kpis['total_users']):,}")
+    with metric_cols[3]:
+        metric_card("New users", f"{int(kpis['new_users']):,}")
+    with metric_cols[4]:
+        metric_card("Avg engagement / active user", f"{kpis['avg_engagement']:.0f}s")
+
+
+def format_delta(current: float, comparison: float, suffix: str = "") -> str:
+    delta = current - comparison
+    sign = "+" if delta >= 0 else ""
+    if suffix:
+        value = f"{sign}{delta:.0f}{suffix}"
+    else:
+        value = f"{sign}{delta:,.0f}"
+    if comparison:
+        percent = delta / comparison * 100
+        value += f" ({sign}{percent:.1f}%)"
+    return value
+
+
+def render_comparison_kpis(current: dict[str, float], comparison: dict[str, float]) -> None:
+    st.subheader("KPI comparison")
+    st.caption("Current selected period compared with the comparison period.")
+    cols = st.columns(5)
+    metrics = [
+        ("Store downloads", "downloads", ""),
+        ("Active users", "active_users", ""),
+        ("Total users", "total_users", ""),
+        ("New users", "new_users", ""),
+        ("Avg engagement", "avg_engagement", "s"),
+    ]
+    for col, (label, key, suffix) in zip(cols, metrics):
+        with col:
+            value = f"{current[key]:.0f}{suffix}" if suffix else f"{int(current[key]):,}"
+            st.metric(label, value, delta=format_delta(current[key], comparison[key], suffix))
+
 def apply_styles() -> None:
     st.markdown(
         """
@@ -644,11 +727,27 @@ def main() -> None:
         default_start = today - timedelta(days=30)
         start = st.date_input("Start date", value=default_start, max_value=today)
         end = st.date_input("End date", value=today, max_value=today)
+        download_breakdown = st.segmented_control(
+            "Downloads trend",
+            DOWNLOAD_BREAKDOWN_MODES,
+            default="Daily",
+        )
+        compare_enabled = st.checkbox("Compare with another period")
+        comparison_start = comparison_end = None
+        if compare_enabled:
+            previous_end = default_start - timedelta(days=1)
+            previous_start = previous_end - (end - start)
+            comparison_start = st.date_input("Comparison start", value=previous_start, max_value=today)
+            comparison_end = st.date_input("Comparison end", value=previous_end, max_value=today)
         st.caption("Downloads come from App Store Connect and Google Play.")
         refresh = st.button("Refresh data", type="primary", width="stretch")
 
     if start > end:
         st.warning("Start date must be on or before end date.")
+        st.stop()
+
+    if compare_enabled and comparison_start and comparison_end and comparison_start > comparison_end:
+        st.warning("Comparison start date must be on or before comparison end date.")
         st.stop()
 
     if refresh:
@@ -674,26 +773,24 @@ def main() -> None:
             st.exception(exc)
             st.stop()
 
-    downloads_total = int(data["downloads_daily"]["downloads"].sum()) if not data["downloads_daily"].empty else 0
-    summary = data["summary"]
-    active_users = int(summary["activeUsers"].iloc[0]) if not summary.empty else 0
-    new_users = int(summary["newUsers"].iloc[0]) if not summary.empty else 0
-    total_users = int(summary["totalUsers"].iloc[0]) if not summary.empty else 0
-    avg_engagement = (
-        summary["userEngagementDuration"].iloc[0] / active_users
-        if active_users and not summary.empty
-        else 0
-    )
+    current_kpis = calculate_kpis(data)
+    render_primary_kpis(current_kpis)
 
-    metric_cols = st.columns(4)
-    with metric_cols[0]:
-        metric_card("Store downloads", f"{downloads_total:,}", "Apple App Store + Google Play")
-    with metric_cols[1]:
-        metric_card("Active users", f"{active_users:,}")
-    with metric_cols[2]:
-        metric_card("New users", f"{new_users:,}")
-    with metric_cols[3]:
-        metric_card("Avg engagement / active user", f"{avg_engagement:.0f}s", f"{total_users:,} total users")
+    if compare_enabled and comparison_start and comparison_end:
+        with st.spinner("Loading comparison period..."):
+            try:
+                comparison_data = load_dashboard_data(
+                    config,
+                    comparison_start,
+                    comparison_end,
+                    store_config_path,
+                    store_config,
+                )
+            except Exception as exc:
+                st.error("Comparison data could not be loaded.")
+                st.exception(exc)
+                st.stop()
+        render_comparison_kpis(current_kpis, calculate_kpis(comparison_data))
 
     top_left, top_right = st.columns([1.1, 0.9])
     with top_left:
@@ -710,7 +807,7 @@ def main() -> None:
         f"to drive app downloads and are planned to run through {DISPLAY_AD_END_NOTE}. "
         "Organic social promotion is also active; paid social has not started yet."
     )
-    render_downloads(data["downloads_daily"])
+    render_downloads(data["downloads_daily"], download_breakdown)
     with st.expander("Download source notes"):
         notes = data["download_notes"]
         if notes.empty:
