@@ -29,7 +29,7 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
-DEPLOY_VERSION = "period-level-chart-breakdowns-2026-08-11"
+DEPLOY_VERSION = "growth-diagnostics-2026-08-11"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
@@ -248,6 +248,12 @@ def run_realtime_report(config: GaConfig, dimensions: list[str], limit: int = 10
     )
     return rows_to_dataframe(response, dimensions, ["activeUsers"])
 
+def optional_report(label: str, *args, **kwargs) -> tuple[pd.DataFrame, str | None]:
+    try:
+        return run_report(*args, **kwargs), None
+    except Exception as exc:
+        return pd.DataFrame(), f"{label} unavailable from GA4: {exc.__class__.__name__}: {exc}"
+
 
 def load_dashboard_data(
     config: GaConfig,
@@ -315,6 +321,136 @@ def load_dashboard_data(
         limit=8,
         order_metric="activeUsers",
     )
+    growth_notes = []
+    first_open_daily, note = optional_report(
+        "First-open daily",
+        config,
+        dimensions=["date"],
+        metrics=["eventCount"],
+        start=start,
+        end=end,
+        event_name="first_open",
+    )
+    if note:
+        growth_notes.append(note)
+    first_open_weekly, note = optional_report(
+        "First-open weekly",
+        config,
+        dimensions=["yearWeek"],
+        metrics=["eventCount"],
+        start=start,
+        end=end,
+        event_name="first_open",
+    )
+    if note:
+        growth_notes.append(note)
+    first_open_monthly, note = optional_report(
+        "First-open monthly",
+        config,
+        dimensions=["yearMonth"],
+        metrics=["eventCount"],
+        start=start,
+        end=end,
+        event_name="first_open",
+    )
+    if note:
+        growth_notes.append(note)
+    acquisition_channels, note = optional_report(
+        "Acquisition channels",
+        config,
+        dimensions=["firstUserDefaultChannelGroup"],
+        metrics=["activeUsers", "newUsers", "totalUsers"],
+        start=start,
+        end=end,
+        limit=10,
+        order_metric="newUsers",
+    )
+    if note:
+        growth_notes.append(note)
+    acquisition_sources, note = optional_report(
+        "Acquisition source / medium",
+        config,
+        dimensions=["firstUserSourceMedium"],
+        metrics=["activeUsers", "newUsers"],
+        start=start,
+        end=end,
+        limit=12,
+        order_metric="newUsers",
+    )
+    if note:
+        growth_notes.append(note)
+    acquisition_campaigns, note = optional_report(
+        "Acquisition campaigns",
+        config,
+        dimensions=["firstUserCampaignName"],
+        metrics=["activeUsers", "newUsers"],
+        start=start,
+        end=end,
+        limit=12,
+        order_metric="newUsers",
+    )
+    if note:
+        growth_notes.append(note)
+    country_usage = run_report(
+        config,
+        dimensions=["country"],
+        metrics=["activeUsers", "newUsers", "totalUsers", "engagedSessions", "userEngagementDuration"],
+        start=start,
+        end=end,
+        limit=12,
+        order_metric="activeUsers",
+    )
+    region_usage, note = optional_report(
+        "Region usage",
+        config,
+        dimensions=["region"],
+        metrics=["activeUsers", "newUsers"],
+        start=start,
+        end=end,
+        limit=12,
+        order_metric="activeUsers",
+    )
+    if note:
+        growth_notes.append(note)
+    device_category_usage = run_report(
+        config,
+        dimensions=["deviceCategory"],
+        metrics=["activeUsers", "newUsers", "totalUsers"],
+        start=start,
+        end=end,
+        limit=8,
+        order_metric="activeUsers",
+    )
+    os_usage = run_report(
+        config,
+        dimensions=["operatingSystem"],
+        metrics=["activeUsers", "newUsers", "totalUsers"],
+        start=start,
+        end=end,
+        limit=8,
+        order_metric="activeUsers",
+    )
+    app_version_usage, note = optional_report(
+        "App version usage",
+        config,
+        dimensions=["appVersion"],
+        metrics=["activeUsers", "newUsers", "totalUsers"],
+        start=start,
+        end=end,
+        limit=10,
+        order_metric="activeUsers",
+    )
+    if note:
+        growth_notes.append(note)
+    top_events = run_report(
+        config,
+        dimensions=["eventName"],
+        metrics=["eventCount", "activeUsers"],
+        start=start,
+        end=end,
+        limit=15,
+        order_metric="eventCount",
+    )
     device_categories = run_realtime_report(config, ["deviceCategory"], limit=8)
     top_countries = run_realtime_report(config, ["country"], limit=8)
     realtime_minutes = run_realtime_report(config, ["minutesAgo"], limit=30)
@@ -331,6 +467,19 @@ def load_dashboard_data(
         "summary": summary,
         "top_countries": top_countries,
         "device_models": device_models,
+        "first_open_daily": first_open_daily,
+        "first_open_weekly": first_open_weekly,
+        "first_open_monthly": first_open_monthly,
+        "acquisition_channels": acquisition_channels,
+        "acquisition_sources": acquisition_sources,
+        "acquisition_campaigns": acquisition_campaigns,
+        "country_usage": country_usage,
+        "region_usage": region_usage,
+        "device_category_usage": device_category_usage,
+        "os_usage": os_usage,
+        "app_version_usage": app_version_usage,
+        "top_events": top_events,
+        "growth_notes": pd.DataFrame({"note": growth_notes}),
         "device_categories": device_categories,
         "realtime_minutes": realtime_minutes,
         "realtime_summary": realtime_summary,
@@ -674,6 +823,275 @@ def render_device_categories(device_categories: pd.DataFrame) -> None:
 
 
 
+def humanize_label(value: object) -> str:
+    text = str(value or "Unknown")
+    if text in {"(not set)", ""}:
+        return "Unknown"
+    return text
+
+
+def render_data_table(
+    df: pd.DataFrame,
+    columns: list[str],
+    labels: dict[str, str],
+    empty_message: str = "No data available.",
+) -> None:
+    if df.empty:
+        st.caption(empty_message)
+        return
+    visible_columns = [column for column in columns if column in df]
+    if not visible_columns:
+        st.caption(empty_message)
+        return
+    table_df = df[visible_columns].copy()
+    for column in visible_columns:
+        if table_df[column].dtype == "object":
+            table_df[column] = table_df[column].map(humanize_label)
+    table_df = table_df.rename(columns=labels)
+    number_columns = {
+        labels.get(column, column): st.column_config.NumberColumn(format="%d")
+        for column in visible_columns
+        if column not in labels or labels.get(column, column) != labels.get(visible_columns[0], visible_columns[0])
+    }
+    st.dataframe(table_df, hide_index=True, width="stretch", column_config=number_columns)
+
+
+def render_horizontal_bar(
+    df: pd.DataFrame,
+    dimension: str,
+    metric: str,
+    title: str,
+    metric_label: str,
+    color: str = "#1a73e8",
+) -> None:
+    with st.container(border=True):
+        st.markdown(f"**{title}**")
+        if df.empty or dimension not in df or metric not in df:
+            st.caption("No data available.")
+            return
+        chart_df = df[[dimension, metric]].copy().head(10)
+        chart_df[dimension] = chart_df[dimension].map(humanize_label)
+        chart_df = chart_df.sort_values(metric, ascending=True)
+        fig = px.bar(
+            chart_df,
+            x=metric,
+            y=dimension,
+            orientation="h",
+            labels={metric: metric_label, dimension: ""},
+            color_discrete_sequence=[color],
+        )
+        fig.update_traces(hovertemplate=f"<b>%{{y}}</b><br>%{{x:,}} {metric_label.lower()}<extra></extra>")
+        fig.update_layout(height=300, margin=dict(l=0, r=0, t=8, b=0), showlegend=False)
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def first_open_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    if breakdown_mode == "Weekly":
+        df = normalize_period_report(data.get("first_open_weekly", pd.DataFrame()), "yearWeek")
+    elif breakdown_mode == "Monthly":
+        df = normalize_period_report(data.get("first_open_monthly", pd.DataFrame()), "yearMonth")
+    else:
+        df = normalize_date_column(data.get("first_open_daily", pd.DataFrame()))
+        if not df.empty:
+            df = df.assign(period=df["date"])
+    if df.empty or "eventCount" not in df:
+        return pd.DataFrame(columns=["period", "first_opens"])
+    return df[["period", "eventCount"]].rename(columns={"eventCount": "first_opens"}).sort_values("period")
+
+
+def store_to_open_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    downloads = aggregate_downloads_for_chart(data.get("downloads_daily", pd.DataFrame()), breakdown_mode)
+    if downloads.empty:
+        downloads = pd.DataFrame(columns=["period", "store_downloads"])
+    else:
+        downloads = downloads.groupby("period", as_index=False)["downloads"].sum().rename(columns={"downloads": "store_downloads"})
+    first_opens = first_open_for_chart(data, breakdown_mode)
+    chart_df = downloads.merge(first_opens, on="period", how="outer").sort_values("period")
+    if chart_df.empty:
+        return chart_df
+    chart_df[["store_downloads", "first_opens"]] = chart_df[["store_downloads", "first_opens"]].fillna(0).astype(int)
+    return chart_df
+
+
+def render_store_to_open_signal(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    chart_df = store_to_open_for_chart(data, breakdown_mode)
+    with st.container(border=True):
+        st.markdown("**Store downloads vs first opens**")
+        st.caption("Use this to spot gaps between store installs/downloads and app starts tracked in GA4.")
+        if chart_df.empty:
+            st.caption("No download or first-open data available for this date range.")
+            return
+        totals = chart_df[["store_downloads", "first_opens"]].sum()
+        cols = st.columns(3)
+        with cols[0]:
+            st.metric("Store downloads", f"{int(totals['store_downloads']):,}")
+        with cols[1]:
+            st.metric("GA4 first opens", f"{int(totals['first_opens']):,}")
+        with cols[2]:
+            rate = totals["first_opens"] / totals["store_downloads"] * 100 if totals["store_downloads"] else 0
+            st.metric("First opens / download", f"{rate:.0f}%" if totals["store_downloads"] else "n/a")
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=chart_df["period"],
+                y=chart_df["store_downloads"],
+                mode="lines+markers",
+                name="Store downloads",
+                line=dict(color="#34a853", width=2),
+                hovertemplate="<b>Store downloads</b><br>%{x|%b %-d, %Y}<br>%{y:,}<extra></extra>",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=chart_df["period"],
+                y=chart_df["first_opens"],
+                mode="lines+markers",
+                name="GA4 first opens",
+                line=dict(color="#fbbc04", width=2),
+                hovertemplate="<b>GA4 first opens</b><br>%{x|%b %-d, %Y}<br>%{y:,}<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            height=300,
+            margin=dict(l=0, r=0, t=8, b=0),
+            legend=dict(orientation="h", y=1.12),
+            hovermode="x unified",
+            xaxis_title=breakdown_mode,
+            yaxis_title="Count",
+        )
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def render_retention_signal(data: dict[str, pd.DataFrame]) -> None:
+    kpis = calculate_kpis(data)
+    estimated_returning = max(int(kpis["active_users"] - kpis["new_users"]), 0)
+    with st.container(border=True):
+        st.markdown("**New vs returning usage**")
+        st.caption("Estimated returning users are active users minus new users for the selected range.")
+        cols = st.columns(3)
+        with cols[0]:
+            st.metric("New users", f"{int(kpis['new_users']):,}")
+        with cols[1]:
+            st.metric("Estimated returning", f"{estimated_returning:,}")
+        with cols[2]:
+            return_rate = estimated_returning / kpis["active_users"] * 100 if kpis["active_users"] else 0
+            st.metric("Returning share", f"{return_rate:.0f}%")
+        mix = pd.DataFrame(
+            {"User type": ["New", "Estimated returning"], "Users": [int(kpis["new_users"]), estimated_returning]}
+        )
+        fig = px.bar(mix, x="User type", y="Users", color="User type", color_discrete_sequence=["#fbbc04", "#1a73e8"])
+        fig.update_traces(hovertemplate="<b>%{x}</b><br>%{y:,} users<extra></extra>")
+        fig.update_layout(height=230, margin=dict(l=0, r=0, t=8, b=0), showlegend=False)
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def render_store_listing_notes() -> None:
+    with st.container(border=True):
+        st.markdown("**Store listing funnel**")
+        st.caption("Downloads are connected. Store impressions, product-page views, conversion rate, ratings, and reviews need separate App Store Connect / Google Play listing analytics feeds.")
+        st.write("Add these when available: listing impressions, product page views, store conversion rate, rating, review count, crashes, and app version adoption.")
+
+
+def render_growth_diagnostics(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    st.subheader("Growth diagnostics")
+    st.caption("Signals for deciding whether to focus on awareness, store-page conversion, targeting, or post-install usage.")
+
+    left, right = st.columns([1.2, 0.8])
+    with left:
+        render_store_to_open_signal(data, breakdown_mode)
+    with right:
+        render_retention_signal(data)
+
+    acq_left, acq_right = st.columns([1, 1])
+    with acq_left:
+        render_horizontal_bar(
+            data.get("acquisition_channels", pd.DataFrame()),
+            "firstUserDefaultChannelGroup",
+            "newUsers",
+            "New users by acquisition channel",
+            "New users",
+            "#34a853",
+        )
+    with acq_right:
+        with st.container(border=True):
+            st.markdown("**Top source / medium**")
+            render_data_table(
+                data.get("acquisition_sources", pd.DataFrame()),
+                ["firstUserSourceMedium", "newUsers", "activeUsers"],
+                {"firstUserSourceMedium": "Source / Medium", "newUsers": "New Users", "activeUsers": "Active Users"},
+            )
+
+    detail_left, detail_right = st.columns([1, 1])
+    with detail_left:
+        with st.container(border=True):
+            st.markdown("**Campaigns**")
+            render_data_table(
+                data.get("acquisition_campaigns", pd.DataFrame()),
+                ["firstUserCampaignName", "newUsers", "activeUsers"],
+                {"firstUserCampaignName": "Campaign", "newUsers": "New Users", "activeUsers": "Active Users"},
+            )
+    with detail_right:
+        render_store_listing_notes()
+
+    audience_left, audience_right = st.columns([1, 1])
+    with audience_left:
+        render_horizontal_bar(
+            data.get("country_usage", pd.DataFrame()),
+            "country",
+            "activeUsers",
+            "Active users by country",
+            "Active users",
+            "#1a73e8",
+        )
+    with audience_right:
+        with st.container(border=True):
+            st.markdown("**Device and app health**")
+            st.caption("Selected date range")
+            tabs = st.tabs(["Device", "OS", "Version"])
+            with tabs[0]:
+                render_data_table(
+                    data.get("device_category_usage", pd.DataFrame()),
+                    ["deviceCategory", "activeUsers", "newUsers", "totalUsers"],
+                    {"deviceCategory": "Device", "activeUsers": "Active Users", "newUsers": "New Users", "totalUsers": "Total Users"},
+                )
+            with tabs[1]:
+                render_data_table(
+                    data.get("os_usage", pd.DataFrame()),
+                    ["operatingSystem", "activeUsers", "newUsers", "totalUsers"],
+                    {"operatingSystem": "OS", "activeUsers": "Active Users", "newUsers": "New Users", "totalUsers": "Total Users"},
+                )
+            with tabs[2]:
+                render_data_table(
+                    data.get("app_version_usage", pd.DataFrame()),
+                    ["appVersion", "activeUsers", "newUsers", "totalUsers"],
+                    {"appVersion": "App Version", "activeUsers": "Active Users", "newUsers": "New Users", "totalUsers": "Total Users"},
+                )
+
+    event_left, event_right = st.columns([1, 1])
+    with event_left:
+        with st.container(border=True):
+            st.markdown("**Top app events**")
+            render_data_table(
+                data.get("top_events", pd.DataFrame()),
+                ["eventName", "eventCount", "activeUsers"],
+                {"eventName": "Event", "eventCount": "Event Count", "activeUsers": "Active Users"},
+            )
+    with event_right:
+        with st.container(border=True):
+            st.markdown("**Regional response**")
+            render_data_table(
+                data.get("region_usage", pd.DataFrame()),
+                ["region", "activeUsers", "newUsers"],
+                {"region": "Region", "activeUsers": "Active Users", "newUsers": "New Users"},
+            )
+
+    notes = data.get("growth_notes", pd.DataFrame())
+    if not notes.empty:
+        with st.expander("Growth diagnostics source notes"):
+            for note in notes["note"].dropna().tolist():
+                st.caption(note)
+
+
 def calculate_kpis(data: dict[str, pd.DataFrame]) -> dict[str, float]:
     downloads_daily = data.get("downloads_daily", pd.DataFrame())
     summary = data.get("summary", pd.DataFrame())
@@ -901,6 +1319,7 @@ def main() -> None:
     st.subheader("Engagement")
     render_engagement_chart(data, download_breakdown)
 
+    render_growth_diagnostics(data, download_breakdown)
 
 if __name__ == "__main__":
     main()
