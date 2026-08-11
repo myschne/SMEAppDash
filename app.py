@@ -29,7 +29,7 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
-DEPLOY_VERSION = "comparison-kpis-2026-08-11"
+DEPLOY_VERSION = "all-chart-breakdowns-2026-08-11"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
@@ -402,19 +402,41 @@ def render_realtime_card(data: dict[str, pd.DataFrame]) -> None:
         )
 
 
-def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
+def add_period_column(df: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
+    if breakdown_mode == "Weekly":
+        return df.assign(period=df["date"].dt.to_period("W-SUN").dt.start_time)
+    if breakdown_mode == "Monthly":
+        return df.assign(period=df["date"].dt.to_period("M").dt.start_time)
+    return df.assign(period=df["date"])
+
+
+def aggregate_engagement_for_chart(engagement_daily: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
     df = normalize_date_column(engagement_daily)
+    if df.empty:
+        return df
+
+    df = add_period_column(df, breakdown_mode)
+    grouped = df.groupby("period", as_index=False).agg(
+        userEngagementDuration=("userEngagementDuration", "sum"),
+        activeUsers=("activeUsers", "sum"),
+        engagedSessions=("engagedSessions", "sum"),
+    )
+    grouped["average_engagement_seconds"] = (
+        grouped["userEngagementDuration"] / grouped["activeUsers"].replace(0, pd.NA)
+    ).fillna(0).round(0)
+    return grouped
+
+
+def render_engagement_chart(engagement_daily: pd.DataFrame, breakdown_mode: str) -> None:
+    df = aggregate_engagement_for_chart(engagement_daily, breakdown_mode)
     if df.empty:
         st.info("No engagement data returned for this date range.")
         return
 
-    df["average_engagement_seconds"] = (
-        df["userEngagementDuration"] / df["activeUsers"].replace(0, pd.NA)
-    ).fillna(0).round(0)
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=df["date"],
+            x=df["period"],
             y=df["average_engagement_seconds"],
             mode="lines",
             name="Avg engagement seconds",
@@ -424,7 +446,7 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
     )
     fig.add_trace(
         go.Bar(
-            x=df["date"],
+            x=df["period"],
             y=df["engagedSessions"],
             name="Engaged sessions",
             marker_color="#8a4b08",
@@ -440,6 +462,7 @@ def render_engagement_chart(engagement_daily: pd.DataFrame) -> None:
         yaxis=dict(title="Seconds"),
         yaxis2=dict(title="Sessions", overlaying="y", side="right", showgrid=False),
         hovermode="x unified",
+        xaxis_title=breakdown_mode,
     )
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
@@ -449,15 +472,8 @@ def aggregate_downloads_for_chart(downloads_daily: pd.DataFrame, breakdown_mode:
     if df.empty:
         return df
 
-    if breakdown_mode == "Weekly":
-        df = df.assign(period=df["date"].dt.to_period("W-SUN").dt.start_time)
-    elif breakdown_mode == "Monthly":
-        df = df.assign(period=df["date"].dt.to_period("M").dt.start_time)
-    else:
-        df = df.assign(period=df["date"])
-
+    df = add_period_column(df, breakdown_mode)
     return df.groupby(["period", "store"], as_index=False)["downloads"].sum()
-
 
 def render_downloads(downloads_daily: pd.DataFrame, breakdown_mode: str) -> None:
     df = normalize_date_column(downloads_daily)
@@ -517,6 +533,7 @@ def render_downloads(downloads_daily: pd.DataFrame, breakdown_mode: str) -> None
             margin=dict(l=0, r=0, t=8, b=0),
             legend=dict(orientation="h", y=1.12),
             hovermode="x unified",
+            xaxis_title=breakdown_mode,
         )
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     with right:
@@ -534,15 +551,29 @@ def render_downloads(downloads_daily: pd.DataFrame, breakdown_mode: str) -> None
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
-def render_user_trends(users_daily: pd.DataFrame) -> None:
+def aggregate_user_trends_for_chart(users_daily: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
     df = normalize_date_column(users_daily)
+    if df.empty:
+        return df
+
+    df = add_period_column(df, breakdown_mode)
+    if breakdown_mode == "Daily":
+        return df[["period", "activeUsers", "newUsers"]]
+    return df.groupby("period", as_index=False).agg(
+        activeUsers=("activeUsers", "mean"),
+        newUsers=("newUsers", "mean"),
+    ).round({"activeUsers": 0, "newUsers": 0})
+
+
+def render_user_trends(users_daily: pd.DataFrame, breakdown_mode: str) -> None:
+    df = aggregate_user_trends_for_chart(users_daily, breakdown_mode)
     if df.empty:
         st.info("No user trend data returned for this date range.")
         return
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=df["date"],
+            x=df["period"],
             y=df["activeUsers"],
             mode="lines+markers",
             name="Active users",
@@ -553,7 +584,7 @@ def render_user_trends(users_daily: pd.DataFrame) -> None:
     )
     fig.add_trace(
         go.Scatter(
-            x=df["date"],
+            x=df["period"],
             y=df["newUsers"],
             mode="lines+markers",
             name="New users",
@@ -566,12 +597,11 @@ def render_user_trends(users_daily: pd.DataFrame) -> None:
         height=320,
         margin=dict(l=0, r=0, t=8, b=0),
         legend=dict(orientation="h", y=1.12),
-        xaxis_title="Date",
+        xaxis_title=breakdown_mode,
         yaxis_title="Users",
         hovermode="x unified",
     )
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-
 
 def render_device_models(device_models: pd.DataFrame) -> None:
     with st.container(border=True):
@@ -728,7 +758,7 @@ def main() -> None:
         start = st.date_input("Start date", value=default_start, max_value=today)
         end = st.date_input("End date", value=today, max_value=today)
         download_breakdown = st.segmented_control(
-            "Downloads trend",
+            "Line chart breakdown",
             DOWNLOAD_BREAKDOWN_MODES,
             default="Daily",
         )
@@ -817,10 +847,10 @@ def main() -> None:
                 st.caption(note)
 
     st.subheader("User trends")
-    render_user_trends(data["users_daily"])
+    render_user_trends(data["users_daily"], download_breakdown)
 
     st.subheader("Engagement")
-    render_engagement_chart(data["engagement_daily"])
+    render_engagement_chart(data["engagement_daily"], download_breakdown)
 
 
 if __name__ == "__main__":
