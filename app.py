@@ -29,7 +29,7 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
-DEPLOY_VERSION = "growth-diagnostics-2026-08-11"
+DEPLOY_VERSION = "breakdown-fallback-2026-08-13"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
@@ -583,7 +583,12 @@ def render_realtime_card(data: dict[str, pd.DataFrame]) -> None:
         )
 
 
+def normalize_breakdown_mode(breakdown_mode: str | None) -> str:
+    return breakdown_mode if breakdown_mode in DOWNLOAD_BREAKDOWN_MODES else DOWNLOAD_BREAKDOWN_MODES[0]
+
+
 def add_period_column(df: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     if breakdown_mode == "Weekly":
         return df.assign(period=df["date"].dt.to_period("W-SUN").dt.start_time)
     if breakdown_mode == "Monthly":
@@ -605,6 +610,7 @@ def normalize_period_report(df: pd.DataFrame, period_column: str) -> pd.DataFram
 
 
 def engagement_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     if breakdown_mode == "Weekly":
         df = normalize_period_report(data.get("engagement_weekly", pd.DataFrame()), "yearWeek")
     elif breakdown_mode == "Monthly":
@@ -625,6 +631,7 @@ def engagement_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> 
 
 
 def render_engagement_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     df = engagement_for_chart(data, breakdown_mode)
     if df.empty:
         st.info("No engagement data returned for this date range.")
@@ -665,6 +672,7 @@ def render_engagement_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) 
 
 
 def aggregate_downloads_for_chart(downloads_daily: pd.DataFrame, breakdown_mode: str) -> pd.DataFrame:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     df = normalize_date_column(downloads_daily)
     if df.empty:
         return df
@@ -673,6 +681,7 @@ def aggregate_downloads_for_chart(downloads_daily: pd.DataFrame, breakdown_mode:
     return df.groupby(["period", "store"], as_index=False)["downloads"].sum()
 
 def render_downloads(downloads_daily: pd.DataFrame, breakdown_mode: str) -> None:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     df = normalize_date_column(downloads_daily)
     if df.empty:
         st.info("No store download data returned for this date range.")
@@ -749,6 +758,7 @@ def render_downloads(downloads_daily: pd.DataFrame, breakdown_mode: str) -> None
 
 
 def user_trends_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     if breakdown_mode == "Weekly":
         df = normalize_period_report(data.get("users_weekly", pd.DataFrame()), "yearWeek")
     elif breakdown_mode == "Monthly":
@@ -764,6 +774,7 @@ def user_trends_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) ->
 
 
 def render_user_trends(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     df = user_trends_for_chart(data, breakdown_mode)
     if df.empty:
         st.info("No user trend data returned for this date range.")
@@ -886,6 +897,7 @@ def render_horizontal_bar(
 
 
 def first_open_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     if breakdown_mode == "Weekly":
         df = normalize_period_report(data.get("first_open_weekly", pd.DataFrame()), "yearWeek")
     elif breakdown_mode == "Monthly":
@@ -900,6 +912,7 @@ def first_open_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> 
 
 
 def store_to_open_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) -> pd.DataFrame:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     downloads = aggregate_downloads_for_chart(data.get("downloads_daily", pd.DataFrame()), breakdown_mode)
     if downloads.empty:
         downloads = pd.DataFrame(columns=["period", "store_downloads"])
@@ -914,6 +927,7 @@ def store_to_open_for_chart(data: dict[str, pd.DataFrame], breakdown_mode: str) 
 
 
 def render_store_to_open_signal(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     chart_df = store_to_open_for_chart(data, breakdown_mode)
     with st.container(border=True):
         st.markdown("**Store downloads vs first opens**")
@@ -993,6 +1007,7 @@ def render_store_listing_notes() -> None:
 
 
 def render_growth_diagnostics(data: dict[str, pd.DataFrame], breakdown_mode: str) -> None:
+    breakdown_mode = normalize_breakdown_mode(breakdown_mode)
     st.subheader("Growth diagnostics")
     st.caption("Signals for deciding whether to focus on awareness, store-page conversion, targeting, or post-install usage.")
 
@@ -1229,6 +1244,7 @@ def main() -> None:
             DOWNLOAD_BREAKDOWN_MODES,
             default="Daily",
         )
+        download_breakdown = normalize_breakdown_mode(download_breakdown)
         compare_enabled = st.checkbox("Compare with another period")
         comparison_start = comparison_end = None
         if compare_enabled:
