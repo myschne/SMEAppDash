@@ -29,7 +29,7 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
-DEPLOY_VERSION = "breakdown-fallback-2026-08-13"
+DEPLOY_VERSION = "expanded-kpis-2026-08-18"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
@@ -308,10 +308,22 @@ def load_dashboard_data(
     summary = run_report(
         config,
         dimensions=[],
-        metrics=["activeUsers", "newUsers", "totalUsers", "userEngagementDuration", "engagedSessions"],
+        metrics=["activeUsers", "newUsers", "totalUsers", "screenPageViews", "userEngagementDuration", "engagedSessions"],
         start=start,
         end=end,
     )
+    growth_notes = []
+    session_starts, note = optional_report(
+        "Session starts",
+        config,
+        dimensions=[],
+        metrics=["eventCount"],
+        start=start,
+        end=end,
+        event_name="session_start",
+    )
+    if note:
+        growth_notes.append(note)
     device_models = run_report(
         config,
         dimensions=["deviceModel"],
@@ -321,7 +333,6 @@ def load_dashboard_data(
         limit=8,
         order_metric="activeUsers",
     )
-    growth_notes = []
     first_open_daily, note = optional_report(
         "First-open daily",
         config,
@@ -465,6 +476,7 @@ def load_dashboard_data(
         "engagement_weekly": engagement_weekly,
         "engagement_monthly": engagement_monthly,
         "summary": summary,
+        "session_starts": session_starts,
         "top_countries": top_countries,
         "device_models": device_models,
         "first_open_daily": first_open_daily,
@@ -1110,11 +1122,15 @@ def render_growth_diagnostics(data: dict[str, pd.DataFrame], breakdown_mode: str
 def calculate_kpis(data: dict[str, pd.DataFrame]) -> dict[str, float]:
     downloads_daily = data.get("downloads_daily", pd.DataFrame())
     summary = data.get("summary", pd.DataFrame())
+    session_starts = data.get("session_starts", pd.DataFrame())
 
     downloads_total = int(downloads_daily["downloads"].sum()) if not downloads_daily.empty else 0
     active_users = int(summary["activeUsers"].iloc[0]) if not summary.empty else 0
     new_users = int(summary["newUsers"].iloc[0]) if not summary.empty else 0
     total_users = int(summary["totalUsers"].iloc[0]) if not summary.empty else 0
+    returning_users = max(active_users - new_users, 0)
+    screen_views = int(summary["screenPageViews"].iloc[0]) if not summary.empty and "screenPageViews" in summary else 0
+    session_start_count = int(session_starts["eventCount"].iloc[0]) if not session_starts.empty else 0
     avg_engagement = (
         float(summary["userEngagementDuration"].iloc[0]) / active_users
         if active_users and not summary.empty
@@ -1125,22 +1141,34 @@ def calculate_kpis(data: dict[str, pd.DataFrame]) -> dict[str, float]:
         "active_users": active_users,
         "total_users": total_users,
         "new_users": new_users,
+        "returning_users": returning_users,
+        "screen_views": screen_views,
+        "session_starts": session_start_count,
         "avg_engagement": avg_engagement,
     }
 
 
+def kpi_definitions() -> list[tuple[str, str, str, str | None]]:
+    return [
+        ("Store downloads", "downloads", "", "Apple App Store + Google Play"),
+        ("Active users", "active_users", "", None),
+        ("Total users", "total_users", "", None),
+        ("New users", "new_users", "", None),
+        ("Returning users", "returning_users", "", "Estimated as active users minus new users."),
+        ("Screen views", "screen_views", "", "GA4 screenPageViews for the selected period."),
+        ("Session starts", "session_starts", "", "GA4 session_start event count."),
+        ("Avg engagement / active user", "avg_engagement", "s", None),
+    ]
+
+
 def render_primary_kpis(kpis: dict[str, float]) -> None:
-    metric_cols = st.columns(5)
-    with metric_cols[0]:
-        metric_card("Store downloads", f"{int(kpis['downloads']):,}", "Apple App Store + Google Play")
-    with metric_cols[1]:
-        metric_card("Active users", f"{int(kpis['active_users']):,}")
-    with metric_cols[2]:
-        metric_card("Total users", f"{int(kpis['total_users']):,}")
-    with metric_cols[3]:
-        metric_card("New users", f"{int(kpis['new_users']):,}")
-    with metric_cols[4]:
-        metric_card("Avg engagement / active user", f"{kpis['avg_engagement']:.0f}s")
+    metrics = kpi_definitions()
+    for start_index in range(0, len(metrics), 4):
+        metric_cols = st.columns(4)
+        for col, (label, key, suffix, help_text) in zip(metric_cols, metrics[start_index : start_index + 4]):
+            with col:
+                value = f"{kpis[key]:.0f}{suffix}" if suffix else f"{int(kpis[key]):,}"
+                metric_card(label, value, help_text)
 
 
 def format_delta(current: float, comparison: float, suffix: str = "") -> str:
@@ -1159,18 +1187,14 @@ def format_delta(current: float, comparison: float, suffix: str = "") -> str:
 def render_comparison_kpis(current: dict[str, float], comparison: dict[str, float]) -> None:
     st.subheader("KPI comparison")
     st.caption("Current selected period compared with the comparison period.")
-    cols = st.columns(5)
-    metrics = [
-        ("Store downloads", "downloads", ""),
-        ("Active users", "active_users", ""),
-        ("Total users", "total_users", ""),
-        ("New users", "new_users", ""),
-        ("Avg engagement", "avg_engagement", "s"),
-    ]
-    for col, (label, key, suffix) in zip(cols, metrics):
-        with col:
-            value = f"{current[key]:.0f}{suffix}" if suffix else f"{int(current[key]):,}"
-            st.metric(label, value, delta=format_delta(current[key], comparison[key], suffix))
+    metrics = kpi_definitions()
+    for start_index in range(0, len(metrics), 4):
+        cols = st.columns(4)
+        for col, (label, key, suffix, _help_text) in zip(cols, metrics[start_index : start_index + 4]):
+            with col:
+                value = f"{current[key]:.0f}{suffix}" if suffix else f"{int(current[key]):,}"
+                st.metric(label, value, delta=format_delta(current[key], comparison[key], suffix))
+
 
 def apply_styles() -> None:
     st.markdown(
