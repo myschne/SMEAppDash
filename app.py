@@ -29,7 +29,7 @@ from store_downloads import fetch_store_downloads
 
 
 APP_NAME = "Advanced Manufacturing App"
-DEPLOY_VERSION = "expanded-kpis-2026-08-18"
+DEPLOY_VERSION = "ga4-new-vs-returning-2026-08-19"
 CONFIG_DIR = Path(__file__).parent / "config"
 SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 APP_PLATFORMS = ["Android", "iOS"]
@@ -312,6 +312,15 @@ def load_dashboard_data(
         start=start,
         end=end,
     )
+    returning_users_report = run_report(
+        config,
+        dimensions=["newVsReturning"],
+        metrics=["activeUsers"],
+        start=start,
+        end=end,
+        limit=4,
+        order_metric="activeUsers",
+    )
     growth_notes = []
     session_starts, note = optional_report(
         "Session starts",
@@ -477,6 +486,7 @@ def load_dashboard_data(
         "engagement_monthly": engagement_monthly,
         "summary": summary,
         "session_starts": session_starts,
+        "returning_users_report": returning_users_report,
         "top_countries": top_countries,
         "device_models": device_models,
         "first_open_daily": first_open_daily,
@@ -990,20 +1000,20 @@ def render_store_to_open_signal(data: dict[str, pd.DataFrame], breakdown_mode: s
 
 def render_retention_signal(data: dict[str, pd.DataFrame]) -> None:
     kpis = calculate_kpis(data)
-    estimated_returning = max(int(kpis["active_users"] - kpis["new_users"]), 0)
+    returning_users = int(kpis["returning_users"])
     with st.container(border=True):
         st.markdown("**New vs returning usage**")
-        st.caption("Estimated returning users are active users minus new users for the selected range.")
+        st.caption("Returning users are pulled directly from GA4 for the selected range.")
         cols = st.columns(3)
         with cols[0]:
             st.metric("New users", f"{int(kpis['new_users']):,}")
         with cols[1]:
-            st.metric("Estimated returning", f"{estimated_returning:,}")
+            st.metric("Returning users", f"{returning_users:,}")
         with cols[2]:
-            return_rate = estimated_returning / kpis["active_users"] * 100 if kpis["active_users"] else 0
+            return_rate = returning_users / kpis["active_users"] * 100 if kpis["active_users"] else 0
             st.metric("Returning share", f"{return_rate:.0f}%")
         mix = pd.DataFrame(
-            {"User type": ["New", "Estimated returning"], "Users": [int(kpis["new_users"]), estimated_returning]}
+            {"User type": ["New", "Returning"], "Users": [int(kpis["new_users"]), returning_users]}
         )
         fig = px.bar(mix, x="User type", y="Users", color="User type", color_discrete_sequence=["#fbbc04", "#1a73e8"])
         fig.update_traces(hovertemplate="<b>%{x}</b><br>%{y:,} users<extra></extra>")
@@ -1119,16 +1129,26 @@ def render_growth_diagnostics(data: dict[str, pd.DataFrame], breakdown_mode: str
                 st.caption(note)
 
 
+def returning_user_count(returning_users_report: pd.DataFrame) -> int:
+    if returning_users_report.empty or "newVsReturning" not in returning_users_report:
+        return 0
+    users = returning_users_report.copy()
+    users["newVsReturning"] = users["newVsReturning"].astype(str).str.lower()
+    returning = users.loc[users["newVsReturning"].eq("returning"), "activeUsers"]
+    return int(returning.sum()) if not returning.empty else 0
+
+
 def calculate_kpis(data: dict[str, pd.DataFrame]) -> dict[str, float]:
     downloads_daily = data.get("downloads_daily", pd.DataFrame())
     summary = data.get("summary", pd.DataFrame())
     session_starts = data.get("session_starts", pd.DataFrame())
+    returning_users_report = data.get("returning_users_report", pd.DataFrame())
 
     downloads_total = int(downloads_daily["downloads"].sum()) if not downloads_daily.empty else 0
     active_users = int(summary["activeUsers"].iloc[0]) if not summary.empty else 0
     new_users = int(summary["newUsers"].iloc[0]) if not summary.empty else 0
     total_users = int(summary["totalUsers"].iloc[0]) if not summary.empty else 0
-    returning_users = max(active_users - new_users, 0)
+    returning_users = returning_user_count(returning_users_report)
     screen_views = int(summary["screenPageViews"].iloc[0]) if not summary.empty and "screenPageViews" in summary else 0
     session_start_count = int(session_starts["eventCount"].iloc[0]) if not session_starts.empty else 0
     avg_engagement = (
@@ -1154,7 +1174,7 @@ def kpi_definitions() -> list[tuple[str, str, str, str | None]]:
         ("Active users", "active_users", "", None),
         ("Total users", "total_users", "", None),
         ("New users", "new_users", "", None),
-        ("Returning users", "returning_users", "", "Estimated as active users minus new users."),
+        ("Returning users", "returning_users", "", "GA4 newVsReturning=returning active users for the selected period."),
         ("Screen views", "screen_views", "", "GA4 screenPageViews for the selected period."),
         ("Session starts", "session_starts", "", "GA4 session_start event count."),
         ("Avg engagement / active user", "avg_engagement", "s", None),
